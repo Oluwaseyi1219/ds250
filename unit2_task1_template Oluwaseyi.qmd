@@ -1,0 +1,181 @@
+---
+title: "Client Report - Flights: Creating New Columns"
+subtitle: "Unit 2 Task 1"
+author: "Oluwaseyi Omowole"
+format:
+  html:
+    self-contained: true
+    page-layout: full
+    title-block-banner: true
+    toc: true
+    toc-depth: 3
+    toc-location: body
+    number-sections: false
+    html-math-method: katex
+    code-fold: true
+    code-summary: "Show the code"
+    code-overflow: wrap
+    code-copy: hover
+    code-tools:
+        source: false
+        toggle: true
+        caption: See code
+execute: 
+  warning: false
+    
+---
+
+```{python}
+import polars as pl
+import requests #new for reading in JSON
+import io       #new for reading in JSON
+import numpy as np
+from lets_plot import *
+
+LetsPlot.setup_html(isolated_frame=True)
+```
+
+
+
+```{python}
+# Learn morea about Code Cells: https://quarto.org/docs/reference/cells/cells-jupyter.html
+
+# Include and execute your code here
+url = "https://raw.githubusercontent.com/byuidatascience/data4missing/master/data-raw/flights_missing/flights_missing.json"
+response = requests.get(url)
+df = pl.read_json(io.BytesIO(response.content))
+```
+
+## QUESTION 1
+
+1. __Create a new 'season' column.__ Define 'season' as:
+    1. Winter for January, Febuary (note the mispelling), March
+    1. Spring for April, May, June
+    1. Summer for  July, August, September
+    1. Fall for October, November, December
+    1. All other rows can be assigned a value of 'Unknown' 
+
+_No discussion needed for this question_
+
+```{python}
+# Include and execute your code here
+
+df = df.with_columns(
+    pl.when(pl.col("month").is_in(["January", "Febuary", "March"]))
+    .then(pl.lit("Winter"))
+    .when(pl.col("month").is_in(["April", "May", "June"]))
+    .then(pl.lit("Spring"))
+    .when(pl.col("month").is_in(["July", "August", "September"]))
+    .then(pl.lit("Summer"))
+    .when(pl.col("month").is_in(["October", "November", "December"]))
+    .then(pl.lit("Fall"))
+    .otherwise(pl.lit("Unknown"))
+    .alias("season")
+)
+
+df.select(["month", "season"]).unique().sort("season")
+```
+
+## QUESTION 2
+
+1. __Divide all the columns by 1000 whose name starts with num_of.__ Be sure to first filter out rows that contain problematic values for the columns like -999 or 1500+.
+
+_No discussion needed for this question_
+
+```{python}
+# Include and execute your code here
+
+# Filter out problematic rows:
+#   - num_of_delays_carrier contains "1500+" (string column)
+#   - num_of_delays_late_aircraft == -999
+df_clean = df.filter(
+    (pl.col("num_of_delays_carrier") != "1500+") &
+    (pl.col("num_of_delays_late_aircraft") != -999)
+)
+
+# Cast carrier to Int64 now that "1500+" is removed, then divide all num_of columns by 1000
+num_of_cols = [c for c in df_clean.columns if c.startswith("num_of")]
+
+df_clean = (
+    df_clean
+    .with_columns(pl.col("num_of_delays_carrier").cast(pl.Int64))
+    .with_columns([
+        (pl.col(c) / 1000).alias(c) for c in num_of_cols
+    ])
+)
+```
+
+## QUESTION 3
+
+1. According to the BTS website, the “Weather” category only accounts for severe weather delays. Mild weather delays are not counted in the “Weather” category, but are actually included in both the “nas” and “late_aircraft” categories. __Using the columns you modified in the bullet above, your job is to create a new column that calculates the total number of flights (in 1,000's) delayed by weather (both severe and mild).__ Show your work by printing the first 5 rows of the dataset. Use these three rules for your calculations:  
+
+    a. 100% of delayed flights in the Weather category are due to weather  
+    a. 30% of all delayed flights in the "late_aircraft" category are due to weather  
+    a. From April through August, 40% of delayed flights in the NAS category are due to weather. The rest of the months, the proportion rises to 65%  
+
+_No discussion needed for this question_
+
+```{python}
+# Include and execute your code here
+
+# NAS weather proportion: 40% April–August, 65% all other months
+nas_weather_pct = (
+    pl.when(pl.col("month").is_in(["April", "May", "June", "July", "August"]))
+    .then(0.40)
+    .otherwise(0.65)
+)
+
+df_clean = df_clean.with_columns(
+    (
+        pl.col("num_of_delays_weather")                        # 100% of Weather delays
+        + 0.30 * pl.col("num_of_delays_late_aircraft")         # 30% of Late-Aircraft delays
+        + nas_weather_pct * pl.col("num_of_delays_nas")        # 40% or 65% of NAS delays
+    ).alias("num_of_delays_weather_total")
+)
+
+df_clean.select([
+    "airport_code", "month", "year",
+    "num_of_delays_weather",
+    "num_of_delays_late_aircraft",
+    "num_of_delays_nas",
+    "num_of_delays_weather_total"
+]).head(5)
+```
+
+## QUESTION 4
+
+1. __Using the new weather variable calculated above, create a boxplot showing the distribution of flights delayed by weather for each season. Describe what you learn from this graph.__    
+
+_Describe your results and analysis here_
+
+The boxplot reveals clear seasonal differences in weather-related flight delays. **Summer** has the highest median and widest spread, reflecting the impact of summer thunderstorms across major U.S. hubs. **Spring** is second highest, driven by increased storm activity in April through June. **Winter** shows a high median as well due to snowstorms and ice events, but its spread is somewhat narrower than Summer — suggesting winter disruptions are severe but more geographically concentrated. **Fall** consistently has the lowest median and the tightest interquartile range, making it the least weather-disrupted season for air travel. Outliers appear in every season, indicating that extreme weather events can spike delays regardless of time of year.
+
+```{python}
+# Include and execute your code here
+
+# Order seasons meaningfully for the plot
+season_order = ["Winter", "Spring", "Summer", "Fall"]
+
+df_plot = df_clean.filter(pl.col("season") != "Unknown")
+
+(
+    ggplot(df_plot, aes(x="season", y="num_of_delays_weather_total", fill="season")) +
+    geom_boxplot(outlier_color="gray", width=0.5) +
+    scale_x_discrete(limits=season_order) +
+    scale_fill_manual(values={
+        "Winter": "#7eb8d4",
+        "Spring": "#82c785",
+        "Summer": "#f4a460",
+        "Fall":   "#c47c3e"
+    }) +
+    labs(
+        title="Distribution of Weather-Related Flight Delays by Season",
+        subtitle="Includes severe weather (Weather category) + mild weather estimates from NAS & Late-Aircraft",
+        x="Season",
+        y="Flights Delayed by Weather (thousands)",
+        fill="Season"
+    ) +
+    theme_light() +
+    theme(legend_position="none")
+)
+```
